@@ -8,7 +8,7 @@ class CameraStream:
     Thread care preia ultimul frame si il face disponibil GUI-ului.
     """
     def __init__(self, cam, poll_interval=0.01 , fps_limit = 60):
-       
+
         self.camera = cam
         self.poll_interval = poll_interval
         self.frame = None
@@ -22,7 +22,7 @@ class CameraStream:
         self.last_timne = time.time()
         self.fps = 0.0
 
-        
+
 
     def _loop(self):
             """
@@ -32,7 +32,11 @@ class CameraStream:
             #delay = 1.0 / self.fps_limit if self.fps_limit > 0 else 0
 
             while self.running:
-                if hasattr(self.camera, "read"):
+                # FIX: În loc să forțăm camera să facă o nouă citire hardware (ceea ce provoacă lag),
+                # extragem direct ultimul cadru capturat deja în background de thread-ul camerei.
+                if hasattr(self.camera, "camera_get_frame"):
+                    frame = self.camera.camera_get_frame()
+                elif hasattr(self.camera, "read"):
                     frame = self.camera.read()
                 else:
                     frame = self.camera.read_raw()
@@ -47,6 +51,7 @@ class CameraStream:
                         self.fps = 1.0 / dt
                     self.last_timne = now
 
+                # Mici pauze ca să nu sufoce procesorul, adaptat la intervalul cerut
                 time.sleep(self.poll_interval)
 
 
@@ -73,26 +78,23 @@ class CameraStream:
                 logger.warning("Nu pot citi frame de la camera")
                 return False, None
             return True, self.frame.copy()
-        
+
 
     def stop(self):
         """Opreste thread-ul camerei"""
         if not self.running:
             return
-        
+
         self.running = False
         if self.thread:
             self.thread.join(timeout=1)
-        if hasattr(self.camera, "stop"):
-            try:
-                self.camera.stop()
-            except Exception as e:
-                raise CameraError(f"Eroare la oprirea stream-ului: {e}")
+            self.thread = None # Curățăm referința thread-ului mort
+            
+        # FIX: Eliminăm apelul redundant self.camera.stop() de aici, deoarece
+        # de închiderea hardware-ului se ocupă deja în mod centralizat CameraManager.
         logger.info("Stream Oprit")
 
-    
+
     def release(self):
         """Alias pentru stop"""
         self.stop()
-        
-        
