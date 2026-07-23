@@ -1,4 +1,5 @@
 import logging
+from logging.handlers import RotatingFileHandler
 import os
 
 def setup_logger(name="SIR"):
@@ -11,8 +12,13 @@ def setup_logger(name="SIR"):
         log_dir = os.path.join(base_dir, "logs")
         os.makedirs(log_dir, exist_ok=True)
 
-        file_handler = logging.FileHandler(
-            os.path.join(log_dir, "system.log"), encoding="utf-8"
+        # OPTIMIZARE: Folosim RotatingFileHandler ca să nu crească logul la infinit.
+        # maxBytes=5*1024*1024 înseamnă 5 MB maximum per fișier, păstrând ultimele 3 copii.
+        file_handler = RotatingFileHandler(
+            os.path.join(log_dir, "system.log"), 
+            maxBytes=5*1024*1024, 
+            backupCount=3, 
+            encoding="utf-8"
         )
         file_handler.setLevel(logging.DEBUG)
 
@@ -33,4 +39,3 @@ def setup_logger(name="SIR"):
     return logger
 
 logger = setup_logger()
-    
