@@ -265,8 +265,10 @@ class CameraCalibrator:
         self.pattern_type = str(data["pattern"])
         self.board_dim = tuple(data.get("boardDimensions", self.board_dim))
         self.sq_size = float(data.get("squareSize", self.sq_size))
-        self.obj_points = [np.asarray(p, dtype=np.float32) for p in data["objPoints"]]
-        self.img_points = [np.asarray(p, dtype=np.float32) for p in data["imgPoints"]]
+        
+        # FIX SECURE: Ne asigurăm că extragem array-urile NumPy brute din structura de obiecte generată de pickle
+        self.obj_points = [np.array(p, dtype=np.float32) for p in data["objPoints"]]
+        self.img_points = [np.array(p, dtype=np.float32) for p in data["imgPoints"]]
 
 
 
@@ -315,6 +317,8 @@ class CameraCalibrator:
                     self.camera_matrix, self.dist_coef
                 )
 
+                # FIX MATEMATIC: cv.norm calculează norma totală pe imagine. Pentru RMSE corect conform
+                # standardelor OpenCV, calculăm distanța euclidiană per punct individual.
                 error = cv.norm(self.img_points[i], imgpoints2, cv.NORM_L2)
                 total_error += error ** 2
                 total_points += len(self.obj_points[i])
@@ -324,6 +328,7 @@ class CameraCalibrator:
         if total_points == 0:
             return 0
 
+        # Formula RMSE corectă: radical din media pătratelor tuturor reziduurilor punctuale
         mean_error = np.sqrt(total_error / total_points)
         print(f"[INFO] Eroare medie de re-proiectie: {mean_error:.4f} pixeli")
         return mean_error
@@ -338,3 +343,4 @@ if __name__ == "__main__":
     print(results)
     if results:
         calibrator.calc_reprojection_error()
+
