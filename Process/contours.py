@@ -3,7 +3,6 @@ import numpy as np
 from .processor import Processor
 
 
-
 class Contour:
     """
     Functii pentru extragere contururi
@@ -28,7 +27,7 @@ class Contour:
     def get_mask(frame, 
                  processor: Processor, 
                  mode: str="threshold", 
-                 thresh: int | int=None, 
+                 thresh: int | None=None, 
                  ) -> np.ndarray:
         """Returnează mască binară pentru detecție contururi"""         
         if not isinstance(processor, Processor):
@@ -134,6 +133,7 @@ class Contour:
             filtered.append({"area": area, 
                              "vertices": len(approx),
                              "approx": approx,
+                             "bbox": bbox, # Includem bbox pentru a fi utilizat în restul proiectului
                              "contour": c})
 
         return sorted(filtered, key = lambda x:x["area"], reverse=True), mask
@@ -226,7 +226,8 @@ def detect_a4_corners(a4_cnt):
 
     rect = cv.minAreaRect(a4_cnt)
     box = cv.boxPoints(rect)
-    return np.int0(box)
+    # FIX OPENCV/NUMPY: Înlocuim np.int0 (care a fost șters) cu .astype(np.int64) standard
+    return box.astype(np.int64)
 
 
 
