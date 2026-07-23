@@ -16,7 +16,7 @@ def safe_call(default_return=None):
             except SIRBaseError as e:
                 logger.error(f"{func.__name__} | {e}")
             except Exception as e:
-                logger.exception(f"{func.__name__} | Unexpectet error: {e}")
+                logger.exception(f"{func.__name__} | Unexpected error: {e}")
             return default_return
         return wrapper
     return decorator
