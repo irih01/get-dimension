@@ -36,6 +36,12 @@ class Processor:
         self._gpu_tmp = None
         self.gpu_ok = False
 
+        # FIX MEMORY LEAK: Pre-alocăm obiecte GpuMat statice pentru a reutiliza memoria VRAM
+        # și a preveni alocările dinamice masive în buclă care duc la Out Of Memory!
+        self._gpu_dst_gray = None
+        self._gpu_dst_blur = None
+        self._gpu_dst_edges = None
+
         if use_gpu and not self.gpu_available:
             logger.warning("No CUDA")
             self.use_gpu = False
@@ -44,6 +50,9 @@ class Processor:
             try:
                 _ = cv.cuda.GpuMat()
                 self.gpu_ok = True
+                self._gpu_dst_gray = cv.cuda.GpuMat()
+                self._gpu_dst_blur = cv.cuda.GpuMat()
+                self._gpu_dst_edges = cv.cuda.GpuMat()
             except Exception:
                 self.gpu_ok = False
         else:
@@ -54,6 +63,7 @@ class Processor:
         return cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
     
     def _cpu_blur(self, frame: np.ndarray, k: int=5) -> np.ndarray:
+        if k % 2 == 0: k += 1 # Siguranță: kernelul trebuie să fie impar!
         return cv.GaussianBlur(frame, (k, k), 0)
 
     def _cpu_edges(self, gray, t1=80, t2=120):
@@ -84,19 +94,34 @@ class Processor:
         return self._gpu_tmp
 
     def _gpu_gray(self, frame):
-        gpu = self._gpu_upload(frame)
-        gpu = cv.cuda.cvtColor(gpu, cv.COLOR_BGR2GRAY)
-        return gpu.download()
+        gpu_src = self._gpu_upload(frame)
+        if self._gpu_dst_gray is None: self._gpu_dst_gray = cv.cuda.GpuMat()
+        # FIX: Folosim parametrul dst pentru a reutiliza bufferul VRAM static
+        cv.cuda.cvtColor(gpu_src, cv.COLOR_BGR2GRAY, dst=self._gpu_dst_gray)
+        return self._gpu_dst_gray.download()
     
-    def _gpu_blur(self, frame, k=2):
-        gpu = self._gpu_upload(frame)
-        gpu = cv.cuda.GaussianBlur(gpu, (k, k), 0)
-        return gpu.download()
+    def _gpu_blur(self, frame, k=5):
+        # FIX: Forțăm k să fie impar (era implicit 2, ceea ce dădea crash în nucleul CUDA!)
+        if k % 2 == 0: k += 1
+        gpu_src = self._gpu_upload(frame)
+        if self._gpu_dst_blur is None: self._gpu_dst_blur = cv.cuda.GpuMat()
+        cv.cuda.GaussianBlur(gpu_src, (k, k), 0, dst=self._gpu_dst_blur)
+        return self._gpu_dst_blur.download()
     
     def _gpu_edges(self, frame, t1=80, t2=160):
-        gpu = self._gpu_upload(frame)
-        gpu = cv.cuda.Canny(gpu, t1, t2)
-        return gpu.download()
+        gpu_src = self._gpu_upload(frame)
+        if self._gpu_dst_edges is None: self._gpu_dst_edges = cv.cuda.GpuMat()
+        # Notă: cv.cuda.Canny are nevoie ca input-ul să fie deja alb-negru (Gray)
+        if gpu_src.channels() > 1:
+            if self._gpu_dst_gray is None: self._gpu_dst_gray = cv.cuda.GpuMat()
+            cv.cuda.cvtColor(gpu_src, cv.COLOR_BGR2GRAY, dst=self._gpu_dst_gray)
+            gpu_src = self._gpu_dst_gray
+        
+        # Filtrele CUDA Canny cer instanțierea unui detector în OpenCV modern, 
+        # dar pentru compatibilitate cu structura ta folosim apelul direct securizat
+        detector = cv.cuda.createCannyEdgeDetector(t1, t2)
+        detector.detect(gpu_src, self._gpu_dst_edges)
+        return self._gpu_dst_edges.download()
     
 
     # ----------------------------------------------------------------------
@@ -157,7 +182,7 @@ class Processor:
         self.canny_thr = (low, high)
 
     def enable_gpu(self, enable: bool):
-        self.gpu_ok = enable
+        self.gpu_ok = enable and self.gpu_available
         self.use_gpu = enable and self.gpu_available
 
             
@@ -177,7 +202,7 @@ def benchmark(processor, frame, n=30):
 
     # GPU
     if not processor.gpu_available:
-        return cpu_t, None
+        return {"cpu_ms": cpu_t * 1000, "gpu_ms": None, "gpu_faster": False}
     
     processor.enable_gpu(True)
     t0 = time.time()
@@ -190,18 +215,11 @@ def benchmark(processor, frame, n=30):
     logger.info(f"Benchmark: CPU={cpu_t*1000:.2f}ms | GPU={gpu_t*1000:.2f}ms")
 
     return {"cpu_ms": cpu_t * 1000,
-            "gpu_ms": None if gpu_t is None else gpu_t * 1000,
-            "gpu_faster": gpu_t is not None and gpu_t < cpu_t}
+            "gpu_ms": float(gpu_t * 1000),
+            "gpu_faster": bool(gpu_t < cpu_t)}
 
 
-# from process import benchmark_processor
-# from processor import Processor
-
-# processor = Processor(use_gpu=True)
-
-# cpu_t, gpu_t = benchmark_processor(processor, frame)
-
-# if gpu_t is not None and gpu_t < cpu_t * 0.8:
+# FIX UTILIZARE RECOMANDATĂ:
+# res = benchmark(processor, frame)
+# if res["gpu_faster"]:
 #     processor.enable_gpu(True)
-# else:
-#     processor.enable_gpu(False)
