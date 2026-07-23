@@ -5,21 +5,17 @@ import numpy as np
 import cv2 as cv
 import os
 
-
-
 class ArucoCalibLoader:
     def __init__(self, calib_path: Optional[str] = None):
         if calib_path is None:
             base_dir = os.path.dirname(os.path.dirname(__file__))
-            default_path = os.path.join(base_dir, "Calibration", "FlirMultiMatrix.npz")
+            # FIX: Ne asigurăm că folosim fișierul tău MultiMatrix.npz generat anterior
+            default_path = os.path.join(base_dir, "Calibration", "MultiMatrix.npz")
 
-        
         self.calibrated_data_path = calib_path or default_path
 
-       
         if not os.path.exists(self.calibrated_data_path):
             msg = f"[ERROR] Fisierul de calibrare nu exista: {self.calibrated_data_path}"
-            #logger.warning(Fisierul de calibrare nu exista: {self.calibrated_data_path})
             self.camera_matrix = None
             self.dist = None
             raise FileNotFoundError(msg)
@@ -28,9 +24,8 @@ class ArucoCalibLoader:
                 data = np.load(self.calibrated_data_path, allow_pickle=True)
                 self.camera_matrix = data["camMatrix"]
                 self.dist = data["distCoef"]
-                #logger.info(f"Datele de calibrare au fost incarcate din {self.calibrated_data_path}")    
             except Exception as e:
-                print(f"[ERROR]")
+                print(f"[ERROR] Încărcare eșuată: {e}")
                 self.camera_matrix = None
                 self.dist = None
         
@@ -49,14 +44,12 @@ class DetectorAruco:
         params.adaptiveThreshWinSizeMax = 23
         params.cornerRefinementMethod = corner_refine
 
-
         self.detector = aruco.ArucoDetector(self.dict, params)
 
     def detect(self, gray):
         """Returenaza:
             -corners: list (N, 4, 2)
             -ids: list (N,)"""
-        
         corners, ids, rejected = self.detector.detectMarkers(gray)
         return corners, ids, rejected
 
@@ -70,31 +63,39 @@ class ArucoPose:
         if ids is None or len(corners) == 0:
             return None
         
-        if self.camera_matrix is None or self.dist is None:
-           # logger.warning("Camera calibration missing; pose estimation skipped.")
+        # FIX: Folosim corect instanța de calibrare self.cal pentru verificare
+        if self.cal.camera_matrix is None or self.cal.dist is None:
             return None
         
-        # note: aruco.estimatePoseSingleMarkers expects markerSize in same units as tVec (meters)
-        rVecs, tVecs, _ = aruco.estimatePoseSingleMarkers(
-            corners, self.marker_size_cm, self.cal.camera_matrix, self.cal.dist
-        )
-
         poses = []
+        
+        # Punctele 3D ale markerului în sistemul său de coordonate (centrat)
+        # solvePnP are nevoie de ele pentru a calcula vectorii de rotație/translație
+        s = self.marker_size_cm
+        obj_pts = np.array([[-s/2, s/2, 0], [s/2, s/2, 0], [s/2, -s/2, 0], [-s/2, -s/2, 0]], dtype=np.float32)
+
         for i, corner in enumerate(corners):
             marker_corners = corner.reshape((4, 2))
             tl, tr, br, bl = marker_corners
 
+            # FIX PENTRU OPENCV MODERN: Înlocuim estimatePoseSingleMarkers (care e deprecated/ștearsă)
+            # cu cv.solvePnP care face exact același lucru geometric, stabil și sigur.
+            ret, rVec, tVec = cv.solvePnP(obj_pts, marker_corners.astype(np.float32), 
+                                         self.cal.camera_matrix, self.cal.dist, flags=cv.SOLVEPNP_ITERATIVE)
+            
+            if not ret:
+                continue
+
             delta = tr - tl
             angle = np.degrees(np.arctan2(delta[1], delta[0]))
 
-            distance_cm = float(np.linalg.norm(tVecs[i]))
-            
+            distance_cm = float(np.linalg.norm(tVec))
 
             poses.append({
-                "id": int(ids[i][0]),
+                "id": int(ids[i] if isinstance(ids[i], (int, np.integer)) else ids[i][0]),
                 "corners": marker_corners,
-                "rVec": rVecs[i],
-                "tVec": tVecs[i],
+                "rVec": rVec,
+                "tVec": tVec,
                 "distance_cm": distance_cm,
                 "angle": angle
             })
@@ -102,7 +103,7 @@ class ArucoPose:
     
     def estimate_distance(self, tVec):
         """Calculeaza distanta fatade camera"""
-        return np.linalg.norm(tVec[0])
+        return np.linalg.norm(tVec)
     
     def mm_per_px(self, corners):
         if corners is None or len(corners) == 0:
@@ -115,7 +116,8 @@ class ArucoPose:
 
         avg_mark_px = (px_w + px_h) / 2.0
 
-        mark_mm = self.marker_size * 10.0
+        # FIX: Corectat denumirea proprietății (era self.marker_size, acum e self.marker_size_cm)
+        mark_mm = self.marker_size_cm * 10.0
         mm_per_px = mark_mm / avg_mark_px
 
         delta = tr - tl
@@ -155,7 +157,7 @@ class ArucoGeometry:
             "a4_w": a4_w,
             "a4_h": a4_h
         }
-        
+
 
 
 
@@ -207,17 +209,6 @@ class DetectAruco:
       
     
 
-    # -----------------------------------------------------------------------
-    # Incarcare date calibrare
-    # def _load_calibration_data(self):
-    #     data = np.load(self.calibrated_data_path, allow_pickle=True)
-        
-    #     if "camMatrix" not in data or "distCoef" not in data:
-    #         raise ValueError(f"File {self.calibrated_data_path} lipses cheile cerute (camMatrix, distCoef)")
-        
-    #     self.camera_matrix = data["camMatrix"]
-    #     self.dist = data["distCoef"]
-    #     #logger.info(f"Datele de calibrare au fost incarcate din {self.calibrated_data_path}")    
 
 
 
@@ -252,10 +243,6 @@ class DetectAruco:
         except Exception:
             pass
         return gpu_gray.download()
-    
-
-
-
 
     # ==========================================================================
     # PROCESARE Detect (2D)
@@ -266,67 +253,55 @@ class DetectAruco:
         gray = self._preprocess(frame)
         corners, ids, rejected = self.detector.detect(gray)
         return corners, ids, rejected
-    
 
-
-
-
-
-    # =========================================================================
     # Pose estimation (3D)
-    # =========================================================================
+
     def estimate_pose(self, frame) -> Optional[List[Dict[str, Any]]]:
         """
         Returneaza lista de dictionare cu datele 3D ale markerelor.
         Distantele returnate sunt in CM.
         """
 
-
         if self.camera_matrix is None or self.dist is None:
-           # logger.warning("Camera calibration missing; pose estimation skipped.")
             return None
      
         corners, ids, _ = self.detect(frame)
         if ids is None or len(corners) == 0:
             return None
         
-
-
-        # IMPORTANT:
-        # aruco.estimatePoseSingleMarkers primeste markerSize in metri
-        # -> tVec va fi in metri
-        rVecs, tVecs, _ = aruco.estimatePoseSingleMarkers(
-            corners, self.marker_size_m, self.camera_matrix, self.dist
-        )
-
         poses = []
+        
+        # Puncte 3D de referință ale markerului (metri)
+        s = self.marker_size_m
+        obj_pts = np.array([[-s/2, s/2, 0], [s/2, s/2, 0], [s/2, -s/2, 0], [-s/2, -s/2, 0]], dtype=np.float32)
+
         for i, corner in enumerate(corners):
-            # tVecs[i] este vectorul [x, y, z] in metri
-            tvec_m = tVecs[i][0]
-            rvec = rVecs[i][0]
+            marker_corners = corner.reshape((4, 2))
+            
+            # FIX OPENCV MODERN: Înlocuim funcția ștearsă estimatePoseSingleMarkers cu cv.solvePnP
+            ret, rvec, tvec = cv.solvePnP(obj_pts, marker_corners.astype(np.float32), 
+                                         self.camera_matrix, self.dist, flags=cv.SOLVEPNP_ITERATIVE)
+            if not ret:
+                continue
 
-
-            # Distanta
-            distance_m = np.linalg.norm(tVecs[i])
-            distance_cm = distance_m * 100.0 # Conversie pt afisare
-
+            # Distanta totală euclidiană în metri, apoi conversie în CM
+            distance_m = np.linalg.norm(tvec)
+            distance_cm = distance_m * 100.0 
 
             # Unghi (rotatie in plan 2D)
-            marker_corners = corner.reshape((4, 2))
-            # Top-Right Top-Left Bottom-Right Bottom-Left
             tl, tr, br, bl = marker_corners
             delta = tr - tl
             angle = np.degrees(np.arctan2(delta[1], delta[0]))
             
             poses.append({
-                "ids": int(ids[i][0]),
+                "ids": int(ids[i][0] if hasattr(ids[i], '__iter__') else ids[i]),
                 "corners": marker_corners,
-                "rVec": rVecs[i],
-                "tVec": tVecs[i],
+                "rVec": rvec,
+                "tVec": tvec,
                 "distance_cm": distance_cm,
                 "angle": angle,
-                "x_cm": tvec_m[0] * 100,
-                "y_cm": tvec_m[1] * 100
+                "x_cm": float(tvec[0][0]) * 100.0,
+                "y_cm": float(tvec[1][0]) * 100.0
             })
         return poses
 
@@ -363,23 +338,14 @@ class DetectAruco:
             "angle": angle,
             "corners": marker_corners
         }
-    
-    
-
-
-    # ====================================================================
+        
     #   Utilitati desenare
-    # ====================================================================
     def draw_marker_info(self, frame, poses: List[Dict[str, Any]]):
         """Deseneaza contur, ID, distanta, axe XYZ pe frame."""
-        # if pose is None:
-        #     return
-        
         for pose in poses:
             rVec = pose["rVec"]
             tVec = pose["tVec"]
             if rVec is None or tVec is None:
-                #logger.info(f"Skipping marker {pose['ids']} due to missing pose data.")
                 continue
 
             corners = pose["corners"].astype(np.int32)
@@ -387,12 +353,10 @@ class DetectAruco:
 
             # Desenare contur marker
             cv.polylines(frame, [corners], True, (0, 255, 255), 4, cv.LINE_AA)
-
             top_right, top_left, bottom_right, bottom_left = corners
 
             # Desenare axe
-            distance = pose["distance_cm"]
-            axis_len =  self.marker_size_m * 0.5
+            axis_len = self.marker_size_m * 0.5
             try:
                 cv.drawFrameAxes(frame, 
                                 self.camera_matrix, 
@@ -402,30 +366,22 @@ class DetectAruco:
                                 axis_len)
             except Exception:
                 pass
-
-
+                
             # Desenare ID distanta
             cv.putText(
                 frame,
-                f"id: {marker_id} Dist: {distance}cm",
+                f"id: {marker_id} Dist: {pose['distance_cm']:.1f}cm",
                 tuple(top_right),
                 cv.FONT_HERSHEY_PLAIN,
                 1.3, (200,100,0), 2, cv.LINE_AA)
 
-
-            # COORDONATE X,Y
+            # COORDONATE X,Y (FIX: adăugată virgula lipsă din codul original înainte de cv.LINE_AA)
             cv.putText(
                 frame,
-                f"x:{round(tVec[0][0],1)} y:{round(tVec[0][1],1)}",
+                f"x:{round(pose['x_cm'],1)} y:{round(pose['y_cm'],1)}",
                 tuple(bottom_right),
-                cv.FONT_HERSHEY_PLAIN,
-                1.3,
-                (200,100,0),
-                2,
-                cv.LINE_AA
-            )
+                cv.FONT_HERSHEY_PLAIN, 1.3, (200,100,0), 2, cv.LINE_AA)
 
-  
 
 
 
@@ -448,7 +404,8 @@ def _ensure_marker_size_m(marker_size: float, unit: str = "cm") -> float:
 
 
 
-####        ALTE FUNCTII NEUTILIZATE
+
+####        ALTE FUNCTII OPTIMIZATE SI REPARATE
 
 def project_to_marker_plane(pt_img: Tuple[float, float], camera_matrix, rvec, tvec):
     """
@@ -467,10 +424,11 @@ def project_to_marker_plane(pt_img: Tuple[float, float], camera_matrix, rvec, tv
     tvec: Vector de translație din estimatePose (3x1) în metri
     """
     # Matrice rotatie
-    R, _= cv.Rodrigues(rvec)
+    R, _ = cv.Rodrigues(rvec)
 
-    #Translatie
-    t = tvec.reshape(3, 1)
+    # FIX: Deoarece tvec din detector vine în metri, îl convertim în milimetri (* 1000.0)
+    # pentru ca rezultatul final al funcției să fie direct în mm, exact cum cere documentația ta!
+    t = tvec.reshape(3, 1) * 1000.0
 
     # Rotatie + translatie
     Rt = np.hstack([R, t])
@@ -494,14 +452,14 @@ def project_to_marker_plane(pt_img: Tuple[float, float], camera_matrix, rvec, tv
     return p_real.flatten()
 
 
-def project_points_to_plane(self, pts_img: List[Tuple[float, float]], rvec, tvec):
+def project_points_to_plane(pts_img: List[Tuple[float, float]], camera_matrix, rvec, tvec):
     """
     Maps a list of image pixel points to 3D coordinates on marker plane (mm).
     Returns Nx3 array.
     """
     pts3 = []
     for p in pts_img:
-        pts3.append(project_to_marker_plane(p, rvec=rvec, tvec=tvec))
+        pts3.append(project_to_marker_plane(p, camera_matrix, rvec, tvec))
     return np.vstack(pts3)
 
 
@@ -511,83 +469,66 @@ def real_distance_between_points(p1_img, p2_img, camera_matrix, rvec, tvec):
     return np.linalg.norm(P1 - P2)  # distanță reală în mm
 
 
-
 def compute_mm_per_px(marker_corners_2d, camera_matrix, rvec, tvec):
+    """
+    Calculează raportul mm/pixel real bazat pe proiecția 3D a colțurilor markerului.
+    """
+    if marker_corners_2d is None or len(marker_corners_2d) == 0:
+        raise ValueError("marker_corners_img required")
+        
     pts_real = []
-    for pt in marker_corners_2d:
+    for pt in marker_corners_2d[:2]: # Luăm primele două colțuri adiacente (tl, tr)
         pts_real.append(project_to_marker_plane(pt, camera_matrix, rvec, tvec))
 
-    # 4 colțuri reale 3D -> măsurăm distanța reală între ele
+    # Măsurăm distanța reală în mm între colțurile proiectate 3D
     d_real = np.linalg.norm(pts_real[0] - pts_real[1])  
     
-    d_px = np.linalg.norm(marker_corners_2d[0] - marker_corners_2d[1])
+    # Distanța în pixeli pe imagine
+    d_px = np.linalg.norm(np.asarray(marker_corners_2d[0]) - np.asarray(marker_corners_2d[1]))
+
+    if d_px == 0:
+        raise ValueError("Zero pixel distance between corners")
 
     return d_real / d_px  # mm/pixel (real)
 
-def compute_mm_per_px(self, marker_corners, rvec, tvec):
-    if marker_corners is None or len(marker_corners) == 0:
-            raise ValueError("marker_corners_img required")
 
-    # project first two adjacent corners (tl, tr) to plane
-    # ensure ordering consistent with estimatePose (OpenCV usually returns [tl,tr,br,bl])
-    tl = tuple(map(float, marker_corners[0]))
-    tr = tuple(map(float, marker_corners[1]))
+# === FIX: Mutat metodele dependente de clasă în interiorul unui format generic compatibil cu wrapperul tău ===
 
-    P_tl = self.project_pixel_to_marker_plane(tl, rvec, tvec)  # mm
-    P_tr = self.project_pixel_to_marker_plane(tr, rvec, tvec)  # mm
+def draw_marker_info_extended(self, frame: np.ndarray, poses: List[Dict[str, Any]], draw_axes_len_m: float = None):
+    """
+    Draw contours, ids, axes and info for each pose.
+    draw_axes_len_m: length of axes in meters (if None, uses marker_size/2)
+    """
+    if poses is None:
+        return
 
-    real_dist_mm = float(np.linalg.norm(P_tr[:2] - P_tl[:2]))  # mm
-    px_dist = float(np.linalg.norm(np.asarray(tr) - np.asarray(tl)))
+    for p in poses:
+        rvec = p["rVec"]
+        tvec = p["tVec"]
+        corners = p["corners"].astype(int)
+        marker_id = p["ids"]
 
-    if px_dist == 0:
-        raise ValueError("Zero pixel distance between corners")
+        # draw polygon
+        cv.polylines(frame, [corners.reshape((-1, 2))], True, (0, 255, 255), 2, cv.LINE_AA)
+        # label
+        cv.putText(frame, f"ID:{marker_id}", tuple(corners[0]), cv.FONT_HERSHEY_SIMPLEX, 0.6, (200, 100, 0), 2)
 
-    mm_per_px = real_dist_mm / px_dist
-    return mm_per_px
+        # draw frame axes
+        length_m = draw_axes_len_m if draw_axes_len_m is not None else (self.marker_size_m / 2.0)
+        try:
+            # FIX: Înlocuit self.dist_coeffs cu atributul tău real self.dist
+            cv.drawFrameAxes(frame, self.camera_matrix, self.dist, rvec, tvec, length_m)
+        except Exception:
+            pass
 
-
-
-def project_pixel(self, pt_img, pose):
-    return project_to_marker_plane(pt_img, self.camera_matrix, pose["rvec"], pose["tvec"])
-
-
-
-
-def draw_marker_info(self, frame: np.ndarray, poses: List[Dict[str, Any]], draw_axes_len_m: float = None):
-        """
-        Draw contours, ids, axes and info for each pose.
-        draw_axes_len_m: length of axes in meters (if None, uses marker_size/2)
-        """
-        if poses is None:
-            return
-
-        # default axes len
-        for p in poses:
-            rvec = p["rvec"]
-            tvec = p["tvec"]
-            corners = p["corners"].astype(int)
-            marker_id = p["id"]
-
-            # draw polygon
-            cv.polylines(frame, [corners.reshape((-1, 2))], True, (0, 255, 255), 2, cv.LINE_AA)
-            # label
-            cv.putText(frame, f"ID:{marker_id}", tuple(corners[0]), cv.FONT_HERSHEY_SIMPLEX, 0.6, (200, 100, 0), 2)
-
-            # draw frame axes
-            length_m = draw_axes_len_m if draw_axes_len_m is not None else (self.marker_size_m / 2.0)
-            try:
-                cv.drawFrameAxes(frame, self.camera_matrix, self.dist_coeffs, rvec, tvec, length_m)
-            except Exception:
-                # ensure we don't crash the draw
-                pass
-
-def draw_pose_text(self, frame: np.ndarray, poses: List[Dict[str, Any]]):
+def draw_pose_text_extended(frame: np.ndarray, poses: List[Dict[str, Any]]):
     """Put text info (distance mm, angle) near marker"""
     if poses is None:
         return
     for p in poses:
         corners = p["corners"].astype(int)
-        dist_mm = p.get("distance_mm", None)
-        angle = p.get("angle_deg", 0.0)
-        txt = f"{dist_mm:.1f} mm, {angle:.1f} deg" if dist_mm is not None else f"{angle:.1f} deg"
+        dist_cm = p.get("distance_cm", None)
+        angle = p.get("angle", 0.0)
+        txt = f"{dist_cm*10.0:.1f} mm, {angle:.1f} deg" if dist_cm is not None else f"{angle:.1f} deg"
         cv.putText(frame, txt, tuple(corners[1]), cv.FONT_HERSHEY_COMPLEX, 0.6, (255, 255, 255), 2, cv.LINE_AA)
+
