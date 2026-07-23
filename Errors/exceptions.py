@@ -14,5 +14,5 @@ class MarkerError(SIRBaseError):
 class ProcessingError(SIRBaseError):
     pass
 
-class CalibrationMissingError(RuntimeError):
+class CalibrationMissingError(CalibrationError):
     pass
