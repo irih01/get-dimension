@@ -1,12 +1,14 @@
 import cv2 as cv
 import numpy as np
 import os
+import time
 
 class ManualDistance:
-    def __init__(self, camera_stream, save_path = "manual_input.npz", calib_matrix = ".MultiMatrix.npz"):
+    def __init__(self, camera_stream, save_path = "manual_input.npz", calib_matrix = "MultiMatrix.npz"):
         self.cam = camera_stream
         self.save_path = save_path
-        self.calib_matrix= calib_matrix
+        # FIX: Corectat punctul rătăcit din denumirea implicită
+        self.calib_matrix = calib_matrix
 
         self.points = []
         self.frame = None
@@ -32,7 +34,9 @@ class ManualDistance:
 
     def _mouse_event(self, event, x, y, flags, param):
         if event == cv.EVENT_LBUTTONDOWN:
-            self.points.append((x, y))
+            # Lăsăm utilizatorul să pună puncte doar în faza inițială
+            if len(self.points) < 2:
+                self.points.append((x, y))
 
     def _draw_ui(self, frame, text):
         y0 = 30
@@ -46,23 +50,29 @@ class ManualDistance:
         cv.setMouseCallback("Manual Distance", self._mouse_event)
 
         step = "select_points"
-
         real_dist_mm = None
 
         while True:
-            ret, frame = self.cam.get_frame()
+            # FIX: Compatibilitate cu interfața ta unificată de stream
+            if hasattr(self.cam, "stream_get_frame"):
+                ret, frame = self.cam.stream_get_frame()
+            else:
+                ret, frame = self.cam.get_frame()
+                
             if not ret or frame is None:
+                time.sleep(0.001)
                 continue
 
             display = frame.copy()
+
+            # Desenăm permanent cercurile pentru feedback vizual
+            for p in self.points:
+                cv.circle(display, p, 6, (0, 0, 255), -1)
 
             # 1.Select pcts
             if step == "select_points":
                 ui = " Selecteaza 2 pcte pe obiect \n Click stanga selecteaza"
                 ui += f"\nPuncte selectate: {len(self.points)}/2"
-
-                for p in self.points:
-                    cv.circle(display, p, 6, (0, 0, 255), -1)
 
                 if len(self.points) == 2:
                     step = "ask_distance"
@@ -75,15 +85,21 @@ class ManualDistance:
                 ui = f"Distanta pixel: {px_dist:.1f}px\n"
                 ui += "Introdu distanta reala (mm) in consola..."
 
+                # FIX IMPORTANT: Împrospătăm bufferul ferestrei înainte de blocarea input-ului,
+                # altfel OpenCV va afișa o fereastră albă și blocată în timp ce utilizatorul tastează!
                 cv.imshow("Manual Distance", self._draw_ui(display, ui))
-                cv.waitKey(1)
+                cv.waitKey(50)
 
-                # valoare reala
-                real_dist_mm = float(input("\nIntrodu distanta in mm: "))
-                self.px_p_mm = px_dist / real_dist_mm
-                self.mm_p_px = 1 / self.px_p_mm
-
-                step = "compute_focal"
+                # Preluăm valoarea din consolă
+                try:
+                    real_dist_mm = float(input("\nIntrodu distanta in mm: "))
+                    self.px_p_mm = px_dist / real_dist_mm
+                    self.mm_p_px = 1 / self.px_p_mm
+                    step = "compute_focal"
+                except ValueError:
+                    print("[EROARE] Te rog introdu un număr valid, idiotule!")
+                    self.points = []  # Resetăm punctele ca să reincerci
+                    step = "select_points"
 
             # 3. Focal lenght
             elif step == "compute_focal":
@@ -93,11 +109,11 @@ class ManualDistance:
                 if self.focal_length_px:
                     self.focal_length_mm = self.focal_length_px * self.mm_p_px
                     step = "done"
-
                 else:
                     ui = "Cunosti distanta camera-plan (mm)?\n(y/n) tasteaza in cons.."
                     cv.imshow("Manual Distance", self._draw_ui(display, ui))
-                    cv.waitKey(1)
+                    cv.waitKey(50)
+                    
                     choice = input("Cunosti distanta camera-plan (mm)? (y/n): ").strip().lower()
 
                     if choice == "y":
@@ -127,18 +143,23 @@ class ManualDistance:
             if step == "done" and key == ord('q'):
                 self.save()
                 break
+                
         cv.destroyAllWindows()
 
-    
     def save(self):
-        ret, frame = self.cam.get_frame()
+        # FIX: Compatibilitate cu interfața unificată la salvare
+        if hasattr(self.cam, "stream_get_frame"):
+            ret, frame = self.cam.stream_get_frame()
+        else:
+            ret, frame = self.cam.get_frame()
+            
         if not ret or frame is None:
             print("[ERROR] Nu s-a putut prelua cadrul pentru salvare.")
             return
 
         h, w = frame.shape[:2]
         cx, cy = w / 2, h / 2
-        fx = fy = self.focal_length_px
+        fx = fy = self.focal_length_px if self.focal_length_px else 500.0 # Valoare standard de siguranță
 
         manual_cam_matrix = np.array([
             [fx, 0, cx],
@@ -152,12 +173,12 @@ class ManualDistance:
                  camMatrix = manual_cam_matrix,
                  distCoef = manual_dist_coef, 
                  px_per_mm = self.px_p_mm,
-                 mm_per_pixel=self.mm_p_px,
+                 mm_per_pixel = self.mm_p_px,
                  focal_len_mm = self.focal_length_mm,
                  focal_len_px = self.focal_length_px,
                  points = np.array(self.points))
         
-        print(f"[SUCCES]")
+        print(f"[SUCCES] Datele manuale au fost salvate în {self.save_path}")
         
     @staticmethod
     def load(path):
@@ -165,12 +186,11 @@ class ManualDistance:
             raise FileNotFoundError(path)
         
         data = np.load(path, allow_pickle=True)
+        # FIX DEFINITIV: Am corectat denumirea cheilor ca să se potrivească la fix cu ce salvezi tu în save()!
         return {
-            "pixels_per_mm": float(data["pixels_per_mm"]),
+            "pixels_per_mm": float(data["px_per_mm"]),
             "mm_per_pixel": float(data["mm_per_pixel"]),
-            "focal_length_mm": float(data["focal_length_mm"])
-                if "focal_length_mm" in data else None,
-            "focal_length_px": float(data["focal_length_px"])
-                if "focal_length_px" in data else None,
+            "focal_length_mm": float(data["focal_len_mm"]) if "focal_len_mm" in data and data["focal_len_mm"] is not None else None,
+            "focal_length_px": float(data["focal_len_px"]) if "focal_len_px" in data and data["focal_len_px"] is not None else None,
             "points": data["points"]
         }
