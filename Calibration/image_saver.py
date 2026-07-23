@@ -2,6 +2,7 @@ import cv2 as cv
 import numpy as np
 import logging
 import os
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -60,13 +61,17 @@ class ChessboardImageSaver:
         cv.namedWindow("Camera")
         cv.setMouseCallback("Camera", self._on_mouse)
         while True:
-            ret ,frame = self.cam.stream_get_frame()
-            if frame is None: continue
+            ret, frame = self.cam.stream_get_frame()
+            if frame is None: 
+                time.sleep(0.001) # FIX: Salvăm CPU-ul de la burnout
+                continue
 
             display_frame = frame.copy()
-            display_frame = self._draw_guide_grid(display_frame)
-
+            
+            # FIX IMPORTANT: Detectăm colțurile pe cadrul curat, NU după ce desenăm liniile de ghidaj
+            # care pot induce în eroare detectorul OpenCV!
             display_frame, found, _ = self.detect_chessboard(display_frame)
+            display_frame = self._draw_guide_grid(display_frame)
 
             cv.putText(display_frame,
                        f'Imagine curenta: {self.image_count}',
@@ -79,13 +84,18 @@ class ChessboardImageSaver:
             
             cv.imshow("Camera", display_frame)
 
-
-
             key = cv.waitKey(1)
             if key == ord('q'):
                 break
 
             if (self.clicked or key == ord('s')) and found:
+                gray = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
+                sharp = sharpness_measure(gray)
+                if sharp < self.min_sharpness:
+                    print(f"[Avertisment] Imagine prea blurata (sharp = {sharp:.1f} < {self.min_sharpness}) - skip salvare!")
+                    self.clicked = False
+                    continue
+                    
                 filename = os.path.join(self.save_path, f"image{self.image_count}.png")
                 cv.imwrite(filename, frame)
                 print(f"[INFO] Imagine salvata: {filename}")
@@ -114,7 +124,7 @@ class ChessboardImageSaver:
 
 class CircleImageSaver:
     """Captura si salvare imagini dot-grid 11x4 asymetric circle"""
-    def __init__(self, camera_stream, pattern_dim=(11, 4), save_path='calibration-images', criteria=None, asymetric=True):
+    def __init__(self, camera_stream, pattern_dim=(11, 4), save_path='calibration-images', criteria=None, asymetric=True, min_sharpness=30.0):
         self.cam = camera_stream
         self.pattern_dim = pattern_dim
         self.save_path = os.path.join(os.getcwd(), save_path)
@@ -122,6 +132,9 @@ class CircleImageSaver:
 
         self.criteria = criteria or (cv.TERM_CRITERIA_EPS + cv.TERM_CRITERIA_MAX_ITER,
                                      30, 0.1)
+                                     
+        # FIX: Definim proprietatea min_sharpness care lipsea din constructorul original
+        self.min_sharpness = min_sharpness
 
         self.image_count = 0
         self.clicked = False
@@ -160,8 +173,9 @@ class CircleImageSaver:
         cv.setMouseCallback("Camera", self._on_mouse)
 
         while True:
-            ret ,frame = self.cam.stream_get_frame()
+            ret, frame = self.cam.stream_get_frame()
             if frame is None:
+                time.sleep(0.001)
                 continue
 
             display_frame, found, _ = self.detect_circles(frame.copy())
@@ -182,8 +196,10 @@ class CircleImageSaver:
             if (self.clicked or key == ord('s')) and found:
                 gray = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
                 sharp = sharpness_measure(gray)
+                # FIX: Corectat denumirea proprietății (era typo sharoness)
                 if sharp < self.min_sharpness:
-                    print(f"Imagine too soft (sharp = {sharp:.1f} < {self.min_sharoness}) - skip")
+                    print(f"Imagine too soft (sharp = {sharp:.1f} < {self.min_sharpness}) - skip")
+                    self.clicked = False
                     continue
                 filename = os.path.join(self.save_path, f"circle_{self.image_count}.png")
                 cv.imwrite(filename, frame)
@@ -194,6 +210,3 @@ class CircleImageSaver:
         self.cam.stop()
         cv.destroyAllWindows()
         print(f"Total imagini salvate: {self.image_count}")
-        
-
-
