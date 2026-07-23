@@ -70,6 +70,7 @@ class CameraCalibrator:
         
         elif self.pattern_type == "circle":
             obj = np.zeros((rows * cols, 3), np.float32)
+            # FIX: Ne asigurăm că ordinea grid-ului respectă standardul OpenCV pentru rețele simetrice
             obj[:, :2] = np.mgrid[0:cols, 0:rows].T.reshape(-1, 2)
             obj *= self.sq_size
             return obj
@@ -139,15 +140,21 @@ class CameraCalibrator:
                 continue
 
             h, w = image.shape[:2]
+            
+            # Salvăm dimensiunea originală a imaginii din acest fișier, nu a celei scalate!
+            self.gray_shape = (w, h)
+
             max_dim = 1000
             scale = max_dim / max(h, w)
+            is_scaled = False
 
             if scale < 1.0:
-                image = cv.resize(image, None, fx=scale, fy=scale, interpolation=cv.INTER_AREA)
+                image_processing = cv.resize(image, None, fx=scale, fy=scale, interpolation=cv.INTER_AREA)
+                is_scaled = True
+            else:
+                image_processing = image.copy()
 
-
-            gray = cv.cvtColor(image, cv.COLOR_BGR2GRAY)
-            self.gray_shape = gray.shape[::-1] #(w, h)
+            gray = cv.cvtColor(image_processing, cv.COLOR_BGR2GRAY)
 
             found, corners = self._detect_pattern(gray)
             if not found:
@@ -160,23 +167,23 @@ class CameraCalibrator:
             else:
                 corners2 = corners
             
-            
+            # FIX IMPORTANT: Dacă am micșorat imaginea pentru procesare rapidă, aducem coordonatele
+            # colțurilor înapoi la scara originală a imaginii înainte de a le salva.
+            if is_scaled:
+                corners2 = corners2 / scale
 
             self.obj_points.append(obj_3D)
             self.img_points.append(corners2)
            
 
             if self.show_res:
-                cv.drawChessboardCorners(image, self.board_dim, corners2, found)
-                cv.imshow("Colturi detectate", image)
+                # Desenăm pe imaginea originală sau pe cea scalată pentru debug vizual
+                cv.drawChessboardCorners(image_processing, self.board_dim, corners, found)
+                cv.imshow("Colturi detectate", image_processing)
                 cv.waitKey(300)
         
         print()  # newline
         print(f"[INFO] {len(self.obj_points)} imagini valide pentru calibrare")
-
-        
-
-
 
         if self.show_res:
             cv.destroyAllWindows()
@@ -195,41 +202,11 @@ class CameraCalibrator:
         print(f"[INFO] Folosim {len(self.obj_points)} imagini pentru calibrare initiala")
         flags = (cv.CALIB_ZERO_TANGENT_DIST | cv.CALIB_FIX_K3 )
 
-        
         ret, mtx, dist, rvecs, tvecs = cv.calibrateCamera(
             self.obj_points, self.img_points, self.gray_shape, None, None, flags=flags
         )
 
         print("[INFO] Calibrare finalizata!")
-
-        # # Logica de detectie imagini stricate
-        # valid_obj = []
-        # valid_img = []
-        # errors = []
-
-        # print("[INFO] Analiza erori individuale per imagine:")
-        # for i in range(len(self.obj_points)):
-        #     imgpoints2, _ = cv.projectPoints(self.obj_points[i], rvecs[i], tvecs[i], mtx, dist)
-        #     err = cv.norm(self.img_points[i], imgpoints2, cv.NORM_L2) / np.sqrt(len(imgpoints2))
-        #     errors.append(err)
-            
-        #     if err <= error_threshold:
-        #         valid_obj.append(self.obj_points[i])
-        #         valid_img.append(self.img_points[i])
-        #         print(f"  [OK] Imagine {i}: {err:.4f} px")
-        #     else:
-        #         print(f"  [!] Imaginea index {i} eliminata: eroare {err:.4f} > {error_threshold}")
-                
-
-        # # 3. Re-calibrare finala doar cu datele bune
-        # if len(valid_obj) < 10:
-        #     print("[WARN] Prea putine imagini ramase sub pragul de 0.5. Incercam cu 0.8...")
-        #     return self.calibrate(error_threshold=0.8)
-
-        # ret, mtx, dist, rvecs, tvecs = cv.calibrateCamera(
-        #     valid_obj, valid_img, self.gray_shape, None, None, flags=flags
-        # )
-
 
         self.camera_matrix = mtx
         self.dist_coef = dist
@@ -246,7 +223,7 @@ class CameraCalibrator:
             "rvecs": rvecs,
             "tvecs": tvecs
         }
-    
+
 
 
 
