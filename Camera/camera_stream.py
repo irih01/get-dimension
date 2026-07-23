@@ -70,7 +70,7 @@ class CameraStream:
         logger.info("Stream pornit")
 
 
-    @safe_call(default_return=None)
+    @safe_call(default_return=(False, None))
     def stream_get_frame(self):
         """ Returneaza (ret, frame)"""
         with self.lock:
