@@ -9,7 +9,6 @@ from .detect_aruco import DetectAruco
 from .color import get_limits
 
 
-
 GREEN = (0, 255, 0)
 ORANGE = (0, 165, 255)
 FONT = cv.FONT_HERSHEY_SIMPLEX
@@ -54,16 +53,18 @@ class ObjDetector:
     # UPDATE SCALE
     # ------------------------------
     def _update_mm_per_px(self, frame: np.ndarray) -> Optional[float]:
-        if not self.use_aruco:
+        if not self.use_aruco or self.aruco is None:
             self.mm_per_px = None
             return None
         
-        poses = self.aruco.estimate_pose(frame)
-        if not poses or self.aruco.dist is None:
+        # FIX DEFINITIV: Nu mai facem media coeficienților de distorsiune ai camerei!
+        # Apelăm metoda dedicată din wrapper care calculează mm_per_px real pe baza pixelilor markerului.
+        aruco_data = self.aruco.ret_dimensions(frame)
+        if not aruco_data:
             self.mm_per_px = None
             return None
-        val = np.mean(self.aruco.dist)
-        self.mm_per_px = float(val)
+            
+        self.mm_per_px = float(aruco_data["mm_per_px"])
         return self.mm_per_px
         
        
@@ -155,6 +156,7 @@ class ObjDetector:
         cx, cy = map(int, obj_data["center_px"])
         p1, p2, p3 = box[0], box[1], box[2]
 
+        # FIX SAFE: Verificăm dacă width_mm există înainte de a forța float() ca să evităm crash-ul!
         if obj_data["width_mm"] is not None:
             w_mm = float(obj_data['width_mm'])
             h_mm = float(obj_data['height_mm'])
@@ -193,7 +195,7 @@ class ObjDetector:
             "bbox": None,
             "width_mm": None,
             "height_mm": None,
-            "widht_px": None,
+            "width_px": None,  # FIX: Corectat typo ("widht_px" -> "width_px")
             "height_px": None,
             "reason": None
         }
@@ -227,7 +229,3 @@ class ObjDetector:
             self._draw(frame, a4_cnt, obj)
 
         return result
-
-    
-    
-
